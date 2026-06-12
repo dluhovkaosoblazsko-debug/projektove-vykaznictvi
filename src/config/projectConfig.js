@@ -1,4 +1,4 @@
-﻿import { BarChart3, Briefcase, Target, Users, Workflow } from 'lucide-react';
+import { BarChart3, Briefcase, Target, Users, Workflow } from 'lucide-react';
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -91,7 +91,7 @@ ${KA02_AI_QUALITY_RULES}
 
 ${COMMON_AI_QUALITY_RULES}`,
     buildUserPrompt: ({ client, fields }) =>
-      `Klient: ${client.fullName}\nVýchozí situace: ${fields.currentSituation || 'Neuvedeno'}\nCíle: ${fields.goals || 'Neuvedeno'}\nBariéry: ${fields.barriers || 'Neuvedeno'}\nPlánované kroky: ${fields.plannedSteps || 'Neuvedeno'}\nČas podpory: ${fields.planDurationMinutes || 0} minut\nPostavení na trhu práce: ${client.postaveniNaTrhu || 'Neuvedeno'}\nVzdělání: ${client.vzdelani || 'Neuvedeno'}\nZnevýhodnění: ${client.znevyhodneni || 'Neuvedeno'}`
+      `Klient: ${client.fullName}\nDatum podpory: ${fields.date || todayIso()}\nVýchozí situace: ${fields.currentSituation || 'Neuvedeno'}\nCíle: ${fields.goals || 'Neuvedeno'}\nBariéry: ${fields.barriers || 'Neuvedeno'}\nPlánované kroky: ${fields.plannedSteps || 'Neuvedeno'}\nČas podpory: ${fields.planDurationMinutes || 0} minut\nPostavení na trhu práce: ${client.postaveniNaTrhu || 'Neuvedeno'}\nVzdělání: ${client.vzdelani || 'Neuvedeno'}\nZnevýhodnění: ${client.znevyhodneni || 'Neuvedeno'}`
   },
   consultation: {
     label: 'Zápis z konzultace',
@@ -118,7 +118,7 @@ ${KA02_AI_QUALITY_RULES}
 
 ${COMMON_AI_QUALITY_RULES}`,
     buildUserPrompt: ({ client, fields }) =>
-      `Klient: ${client.fullName}\nTyp konzultace: ${fields.consultationType || 'Pracovní poradenství'}\nTémata: ${fields.topics || 'Neuvedeno'}\nVyhodnocení: ${fields.outcome || 'Neuvedeno'}\nDohodnuté kroky: ${fields.nextSteps || 'Neuvedeno'}\nDélka: ${fields.durationMinutes || 0} minut\nPostavení na trhu práce: ${client.postaveniNaTrhu || 'Neuvedeno'}\nZnevýhodnění: ${client.znevyhodneni || 'Neuvedeno'}`
+      `Klient: ${client.fullName}\nDatum konzultace: ${fields.date || todayIso()}\nTyp konzultace: ${fields.consultationType || 'Pracovní poradenství'}\nTémata: ${fields.topics || 'Neuvedeno'}\nVyhodnocení: ${fields.outcome || 'Neuvedeno'}\nDohodnuté kroky: ${fields.nextSteps || 'Neuvedeno'}\nDélka: ${fields.durationMinutes || 0} minut\nPostavení na trhu práce: ${client.postaveniNaTrhu || 'Neuvedeno'}\nZnevýhodnění: ${client.znevyhodneni || 'Neuvedeno'}`
   },
   debt: {
     label: 'Záznam dluhového poradenství',
@@ -145,7 +145,7 @@ ${KA02_AI_QUALITY_RULES}
 
 ${COMMON_AI_QUALITY_RULES}`,
     buildUserPrompt: ({ client, fields }) =>
-      `Klient: ${client.fullName}\nMapované závazky: ${fields.debtSummary || 'Neuvedeno'}\nPříčiny předlužení: ${fields.debtCauses || 'Neuvedeno'}\nFáze řešení: ${fields.debtStage || 'Neuvedeno'}\nNavržené kroky: ${fields.solutionPlan || 'Neuvedeno'}\nEdukace: ${fields.educationTopic || 'Neuvedeno'}\nPostavení na trhu práce: ${client.postaveniNaTrhu || 'Neuvedeno'}`
+      `Klient: ${client.fullName}\nDatum podpory: ${fields.date || todayIso()}\nDélka podpory: ${fields.durationMinutes || 0} minut\nMapované závazky: ${fields.debtSummary || 'Neuvedeno'}\nPříčiny předlužení: ${fields.debtCauses || 'Neuvedeno'}\nFáze řešení: ${fields.debtStage || 'Neuvedeno'}\nNavržené kroky: ${fields.solutionPlan || 'Neuvedeno'}\nEdukace: ${fields.educationTopic || 'Neuvedeno'}\nPostavení na trhu práce: ${client.postaveniNaTrhu || 'Neuvedeno'}`
   },
   therapy: {
     label: 'Terapeutická zpráva',
@@ -172,7 +172,7 @@ ${KA02_AI_QUALITY_RULES}
 
 ${COMMON_AI_QUALITY_RULES}`,
     buildUserPrompt: ({ client, fields }) =>
-      `Klient: ${client.fullName}\nPořadí setkání: ${fields.sessionOrder || 1}/3\nTémata: ${fields.themes || 'Neuvedeno'}\nPsychický stav a motivace: ${fields.mentalState || 'Neuvedeno'}\nDoporučení: ${fields.recommendations || 'Neuvedeno'}\nDélka: ${fields.durationMinutes || 180} minut\nZnevýhodnění: ${client.znevyhodneni || 'Neuvedeno'}`
+      `Klient: ${client.fullName}\nDatum setkání: ${fields.date || todayIso()}\nPořadí setkání: ${fields.sessionOrder || 1}/3\nTémata: ${fields.themes || 'Neuvedeno'}\nPsychický stav a motivace: ${fields.mentalState || 'Neuvedeno'}\nDoporučení: ${fields.recommendations || 'Neuvedeno'}\nDélka: ${fields.durationMinutes || 180} minut\nZnevýhodnění: ${client.znevyhodneni || 'Neuvedeno'}`
   },
   cv: {
     label: 'CV a motivační dopis',
@@ -224,7 +224,7 @@ ${KA02_AI_QUALITY_RULES}
 
 ${COMMON_AI_QUALITY_RULES}`,
     buildUserPrompt: ({ client, fields }) =>
-      `Klient: ${client.fullName}\nSimulovaná pozice: ${fields.position || 'Neuvedeno'}\nPrůběh a výkon: ${fields.feedback || 'Neuvedeno'}\nSilné stránky: ${fields.strengths || 'Neuvedeno'}\nDoporučení a rozvojové oblasti: ${fields.developmentAreas || 'Neuvedeno'}`
+      `Klient: ${client.fullName}\nDatum simulátoru: ${fields.date || todayIso()}\nDélka podpory: ${fields.durationMinutes || 0} minut\nSimulovaná pozice: ${fields.position || 'Neuvedeno'}\nPrůběh a výkon: ${fields.feedback || 'Neuvedeno'}\nSilné stránky: ${fields.strengths || 'Neuvedeno'}\nDoporučení a rozvojové oblasti: ${fields.developmentAreas || 'Neuvedeno'}`
   },
   mentor: {
     label: 'Referenční zpráva mentora',

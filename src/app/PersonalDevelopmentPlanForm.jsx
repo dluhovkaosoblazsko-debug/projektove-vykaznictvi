@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import {
   Timestamp,
   collection,
@@ -27,7 +27,8 @@ const emptyPlan = {
   strengthsAndLimits: '',
   identifiedBarriers: '',
   goals: [{ ...emptyGoal }],
-  finalEvaluation: ''
+  finalEvaluation: '',
+  acceptedPlanText: ''
 };
 
 const inputClassName =
@@ -142,7 +143,8 @@ function PersonalDevelopmentPlanForm({ clientId, clientName = '', compact = fals
                 goalEvaluation: goal.goalEvaluation || ''
               }))
             : [{ ...emptyGoal }],
-          finalEvaluation: data.finalEvaluation || data.payload?.finalEvaluation || ''
+          finalEvaluation: data.finalEvaluation || data.payload?.finalEvaluation || '',
+          acceptedPlanText: data.acceptedPlanText || data.payload?.acceptedPlanText || data.documentText || ''
         });
       } catch (loadError) {
         if (isMounted) setError(`Plán se nepodařilo načíst: ${loadError.message}`);
@@ -199,6 +201,7 @@ function PersonalDevelopmentPlanForm({ clientId, clientName = '', compact = fals
       goalEvaluation: goal.isCompleted ? goal.goalEvaluation.trim() : ''
     })),
     finalEvaluation: goalsReadyForFinalEvaluation ? plan.finalEvaluation.trim() : '',
+    acceptedPlanText: plan.acceptedPlanText.trim(),
     updatedAt: Timestamp.now()
   });
 
@@ -227,6 +230,7 @@ function PersonalDevelopmentPlanForm({ clientId, clientName = '', compact = fals
       finalEvaluation: structuredPlan.finalEvaluation,
       payload: {
         ...structuredPlan,
+        acceptedPlanText: structuredPlan.acceptedPlanText,
         structuredPersonalDevelopmentPlan: true
       },
       indicatorFlags: { ka02Plans: true },
@@ -383,6 +387,7 @@ function PersonalDevelopmentPlanForm({ clientId, clientName = '', compact = fals
                 </div>
               ))}
             </div>
+
 
             {goalsReadyForFinalEvaluation ? (
               <div>

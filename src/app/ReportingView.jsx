@@ -1,15 +1,14 @@
-import React from 'react';
-import { Activity, ClipboardCopy, Clock, DownloadCloud, FileSpreadsheet, FileText, PieChart, TrendingUp } from 'lucide-react';
+﻿import React from 'react';
+import { Activity, Archive, ClipboardCopy, FileSpreadsheet, FileText } from 'lucide-react';
 
-import { EmptyState, Panel, SelectField, StatCard } from '../components/ui.jsx';
+import { Panel, SelectField, StatCard } from '../components/ui.jsx';
 import { REPORTING_PERIODS, WORKERS } from '../config/projectConfig.js';
 
 function ReportingView({
   computedIndicators,
+  supportThresholdMetrics = [],
   exportClientsCsv,
-  exportActivitiesCsv,
-  exportIndicatorsCsv,
-  exportMonitoringBundle,
+  exportAllRecordsBackup,
   dashboardFilters,
   setDashboardFilters,
   filteredRecords,
@@ -34,35 +33,21 @@ function ReportingView({
                     className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
                   >
                     <FileSpreadsheet className="h-4 w-4" />
-                    Export klientů
+                    Klienti a podpora
                   </button>
                   <button
-                    onClick={exportActivitiesCsv}
-                    className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                    onClick={exportAllRecordsBackup}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                   >
-                    <DownloadCloud className="h-4 w-4" />
-                    Export aktivit
-                  </button>
-                  <button
-                    onClick={exportIndicatorsCsv}
-                    className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100"
-                  >
-                    <PieChart className="h-4 w-4" />
-                    Export indikátorů
-                  </button>
-                  <button
-                    onClick={exportMonitoringBundle}
-                    className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
-                  >
-                    <FileText className="h-4 w-4" />
-                    Souhrnná dokumentace
+                    <Archive className="h-4 w-4" />
+                    Stáhnout všechny zápisy
                   </button>
                 </div>
               }
             >
               <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {computedIndicators.map((indicator) => (
+                  {[...supportThresholdMetrics, ...computedIndicators].map((indicator) => (
                     <StatCard key={indicator.key} title={indicator.label} current={indicator.current} target={indicator.target} ka={indicator.ka} />
                   ))}
                 </div>
@@ -140,63 +125,7 @@ function ReportingView({
               </Panel>
             )}
 
-            <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-              <Panel title="Drill-down indikátorů" description="Každý indikátor ukazuje přesné zdrojové záznamy." icon={TrendingUp}>
-                <div className="space-y-4">
-                  {computedIndicators.map((indicator) => (
-                    <div key={indicator.key} className="rounded-2xl border border-slate-200 bg-white p-4">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <div className="text-sm font-bold text-slate-900">{indicator.label}</div>
-                          <div className="mt-1 text-xs text-slate-500">
-                            {indicator.ka} · hodnota {indicator.current} / cíl {indicator.target}
-                          </div>
-                        </div>
-                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                          {indicator.currentIds.length} zdrojů
-                        </span>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {indicator.currentIds.length === 0 ?(
-                          <span className="text-sm text-slate-400">Zatím bez zdrojových záznamů.</span>
-                        ) : (
-                          indicator.currentIds.slice(0, 8).map((value) => (
-                            <span key={value} className="rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
-                              {value}
-                            </span>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </Panel>
 
-              <Panel title="Poslední uložené aktivity" description="Rychlá kontrola nově zapsaných dat v systému." icon={Clock}>
-                <div className="space-y-3">
-                  {filteredRecords.length === 0 && (
-                    <EmptyState icon={Clock} title="Dashboard nemá žádné uložené aktivity k započtení." />
-                  )}
-                  {filteredRecords.slice(0, 8).map((record) => (
-                    <div key={record.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="text-sm font-bold text-slate-900">{record.title}</div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        {record.activityDate || 'Bez data'} · {record.ka || 'Bez KA'} · {record.worker || 'Bez pracovníka'}
-                      </div>
-                      {record.clientName && <div className="mt-2 text-sm text-slate-700">{record.clientName}</div>}
-                      <button
-                        type="button"
-                        onClick={() => deleteRecord(record)}
-                        disabled={isSaving}
-                        className="mt-3 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-red-700 transition hover:bg-red-100 disabled:opacity-50"
-                      >
-                        Smazat
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </Panel>
-            </div>
           </div>
   );
 }

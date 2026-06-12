@@ -40,7 +40,8 @@ import {
   User,
   Users,
   Workflow,
-  Brain
+  Brain,
+  Printer
 } from 'lucide-react';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, onSnapshot, updateDoc } from 'firebase/firestore';
@@ -76,6 +77,7 @@ import AiDocumentPanel from './AiDocumentPanel.jsx';
 import sfLogoImage from '../assets/eu-spolufinancovano-logo.png';
 import {
   buildAddress,
+  buildAllRecordsBackupHtml,
   buildClientFolderHtml,
   buildDriveProvisionPayload,
   buildDriveUploadPayload,
@@ -89,6 +91,7 @@ import {
   buildManualClientId,
   buildMonitoringBundleHtml,
   buildRecordHtmlDocument,
+  buildSelectedJourneyPrintHtml,
   cleanGeneratedText,
   computedIndicatorsMap,
   copyToClipboard,
@@ -727,14 +730,56 @@ function parseDateForSort(value) {
   return 0;
 }
 
-function compareTimelineRecordsAsc(a, b) {
-  const dateDiff = parseDateForSort(a.activityDate) - parseDateForSort(b.activityDate);
+function compareTimelineRecordsDesc(a, b) {
+  const dateDiff = parseDateForSort(b.activityDate) - parseDateForSort(a.activityDate);
   if (dateDiff !== 0) return dateDiff;
-  const createdDiff = Number(a.createdAt || 0) - Number(b.createdAt || 0);
+  const createdDiff = Number(b.createdAt || 0) - Number(a.createdAt || 0);
   if (createdDiff !== 0) return createdDiff;
-  if (a.entityType === 'project_entry' && b.entityType !== 'project_entry') return -1;
-  if (b.entityType === 'project_entry' && a.entityType !== 'project_entry') return 1;
+  if (a.entityType === 'project_entry' && b.entityType !== 'project_entry') return 1;
+  if (b.entityType === 'project_entry' && a.entityType !== 'project_entry') return -1;
   return String(a.title || '').localeCompare(String(b.title || ''), 'cs');
+}
+
+function timeToMinutesForSupport(value) {
+  const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function getGeneratorSupportMinutes(draft) {
+  if (draft.selectedKey === 'plan') return Number(draft.planDurationMinutes || 0);
+  if (draft.selectedKey === 'cv') return Number(draft.cvDurationMinutes || 0);
+  const startMinutes = timeToMinutesForSupport(draft.ka02StartTime);
+  const endMinutes = timeToMinutesForSupport(draft.ka02EndTime);
+  if (startMinutes !== null && endMinutes !== null) {
+    const duration = endMinutes >= startMinutes ? endMinutes - startMinutes : endMinutes + 24 * 60 - startMinutes;
+    if (duration > 0) return duration;
+  }
+  return Number(draft.durationMinutes || 0);
+}
+
+function formatSupportDuration(minutes) {
+  const value = Number(minutes || 0);
+  if (!Number.isFinite(value) || value <= 0) return 'není zadána';
+  const hours = value / 60;
+  const hoursLabel = Number.isInteger(hours) ? String(hours) : String(hours).replace('.', ',');
+  return `${value} minut (${hoursLabel} h)`;
+}
+
+function buildExactGeneratorFacts(config, draft) {
+  return [
+    'Závazná data z formuláře:',
+    `Typ dokumentu: ${config.label}`,
+    `KA: ${config.ka}`,
+    `Datum aktivity: ${draft.date || todayIso()}`,
+    `Pracovník: ${draft.worker || 'Neuvedeno'}`,
+    `Délka podpory: ${formatSupportDuration(getGeneratorSupportMinutes(draft))}`,
+    '',
+    'Tato data ve výstupu použij přesně. Datum ani délku podpory neměň, nepřepisuj a nenahrazuj odhadem.'
+  ].join('\n');
 }
 
 function getClientJourneyMeta(record) {
@@ -781,6 +826,138 @@ function getPlanGoals(planRecord) {
   if (Array.isArray(planRecord.goals)) return planRecord.goals;
   if (Array.isArray(planRecord.payload?.goals)) return planRecord.payload.goals;
   return [];
+}
+
+function normalizePlanGoalForAi(goal, index) {
+  return {
+    goalId: goal.goalId || goal.id || `goal-${index + 1}`,
+    goalDescription: cleanGeneratedText(goal.goalDescription || ''),
+    actionSteps: cleanGeneratedText(goal.actionSteps || ''),
+    targetDate: formatCaseSummaryDate(goal.targetDate),
+    isCompleted: Boolean(goal.isCompleted),
+    goalEvaluation: cleanGeneratedText(goal.goalEvaluation || '')
+  };
+}
+
+function buildStructuredPlanForAi(record) {
+  const payload = record.payload || {};
+  return {
+    strengthsAndLimits: cleanGeneratedText(record.strengthsAndLimits || payload.strengthsAndLimits || ''),
+    identifiedBarriers: cleanGeneratedText(record.identifiedBarriers || payload.identifiedBarriers || ''),
+    goals: getPlanGoals(record).map(normalizePlanGoalForAi),
+    finalEvaluation: cleanGeneratedText(record.finalEvaluation || payload.finalEvaluation || '')
+  };
+}
+
+function parseStructuredPlanAiResult(rawValue, sourceRecord) {
+  const rawText = cleanGeneratedText(rawValue || '')
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  const start = rawText.indexOf('{');
+  const end = rawText.lastIndexOf('}');
+  if (start === -1 || end <= start) throw new Error('AI nevrátila strukturovaný návrh plánu ve formátu JSON.');
+
+  const parsed = JSON.parse(rawText.slice(start, end + 1));
+  const sourceGoals = getPlanGoals(sourceRecord);
+  const aiGoals = Array.isArray(parsed.goals) ? parsed.goals : [];
+  const sourceGoalById = new Map(
+    sourceGoals.map((goal, index) => [String(goal.goalId || goal.id || `goal-${index + 1}`), { goal, index }])
+  );
+
+  const goals = sourceGoals.map((sourceGoal, index) => {
+    const goalId = String(sourceGoal.goalId || sourceGoal.id || `goal-${index + 1}`);
+    const aiGoal = aiGoals.find((goal) => String(goal.goalId || '') === goalId) || aiGoals[index] || {};
+    return {
+      ...sourceGoal,
+      goalId,
+      goalDescription: cleanGeneratedText(aiGoal.goalDescription || sourceGoal.goalDescription || ''),
+      actionSteps: cleanGeneratedText(aiGoal.actionSteps || sourceGoal.actionSteps || ''),
+      targetDate: sourceGoal.targetDate || null,
+      isCompleted: Boolean(sourceGoal.isCompleted),
+      goalEvaluation: sourceGoal.isCompleted ? cleanGeneratedText(aiGoal.goalEvaluation || sourceGoal.goalEvaluation || '') : sourceGoal.goalEvaluation || ''
+    };
+  });
+
+  return {
+    strengthsAndLimits: cleanGeneratedText(parsed.strengthsAndLimits || sourceRecord.strengthsAndLimits || sourceRecord.payload?.strengthsAndLimits || ''),
+    identifiedBarriers: cleanGeneratedText(parsed.identifiedBarriers || sourceRecord.identifiedBarriers || sourceRecord.payload?.identifiedBarriers || ''),
+    goals,
+    finalEvaluation: cleanGeneratedText(parsed.finalEvaluation || sourceRecord.finalEvaluation || sourceRecord.payload?.finalEvaluation || ''),
+    acceptedPlanText: cleanGeneratedText(parsed.acceptedPlanText || '')
+  };
+}
+
+function buildPlanRecordWithStructuredDraft(record, structuredDraft, client = null) {
+  const payload = record.payload || {};
+  const updatedRecord = {
+    ...record,
+    strengthsAndLimits: structuredDraft.strengthsAndLimits,
+    identifiedBarriers: structuredDraft.identifiedBarriers,
+    goals: structuredDraft.goals,
+    finalEvaluation: structuredDraft.finalEvaluation || '',
+    acceptedPlanText: structuredDraft.acceptedPlanText || '',
+    payload: {
+      ...payload,
+      strengthsAndLimits: structuredDraft.strengthsAndLimits,
+      identifiedBarriers: structuredDraft.identifiedBarriers,
+      goals: structuredDraft.goals,
+      finalEvaluation: structuredDraft.finalEvaluation || '',
+      acceptedPlanText: structuredDraft.acceptedPlanText || '',
+      structuredPersonalDevelopmentPlan: true
+    }
+  };
+  return {
+    ...updatedRecord,
+    documentText: structuredDraft.acceptedPlanText || buildPersonalDevelopmentPlanText(updatedRecord, client)
+  };
+}
+function buildPersonalDevelopmentPlanText(planRecord, client = null) {
+  if (!planRecord) return '';
+  const payload = planRecord.payload || {};
+  const acceptedPlanText = cleanGeneratedText(planRecord.acceptedPlanText || payload.acceptedPlanText || '');
+  if (acceptedPlanText) return acceptedPlanText;
+  const goals = getPlanGoals(planRecord);
+  const lines = [
+    'Plán osobního rozvoje',
+    '',
+    `Klient: ${client?.fullName || planRecord.clientName || 'Neuvedeno'}`,
+    `Datum plánu: ${formatDateLabel(planRecord.activityDate)}`,
+    `Pracovník: ${planRecord.worker || 'Neuvedeno'}`,
+    '',
+    'Silné stránky a limity',
+    planRecord.strengthsAndLimits || payload.strengthsAndLimits || 'Neuvedeno',
+    '',
+    'Identifikované bariéry',
+    planRecord.identifiedBarriers || payload.identifiedBarriers || 'Neuvedeno',
+    '',
+    'Cíle a plánované kroky'
+  ];
+
+  if (goals.length) {
+    goals.forEach((goal, index) => {
+      const targetDate = formatCaseSummaryDate(goal.targetDate);
+      lines.push(`${index + 1}. ${cleanGeneratedText(goal.goalDescription || 'Bez popisu cíle.')}`);
+      if (goal.actionSteps) lines.push(`   Kroky: ${cleanGeneratedText(goal.actionSteps)}`);
+      if (targetDate) lines.push(`   Termín: ${targetDate}`);
+      lines.push(`   Stav: ${goal.isCompleted ? 'splněn' : 'otevřen'}`);
+      if (goal.goalEvaluation) lines.push(`   Vyhodnocení: ${cleanGeneratedText(goal.goalEvaluation)}`);
+    });
+  } else {
+    lines.push('Cíle zatím nejsou doplněné.');
+  }
+
+  const finalEvaluation = planRecord.finalEvaluation || payload.finalEvaluation || '';
+  if (finalEvaluation) {
+    lines.push('', 'Závěrečné vyhodnocení', cleanGeneratedText(finalEvaluation));
+  }
+
+  const documentText = cleanGeneratedText(planRecord.documentText || '');
+  if (documentText && !documentText.includes('První cíl:')) {
+    lines.push('', 'Text zápisu', documentText);
+  }
+
+  return lines.join('\n');
 }
 
 function buildClientIndicatorRows(timeline) {
@@ -977,9 +1154,13 @@ ${deterministicSummary}
 `.trim();
 }
 
-function buildClientJourneyDetail(record) {
+function buildClientJourneyDetail(record, client = null) {
   if (record.entityType === 'project_entry') {
     return record.summary || 'Klient byl zařazen do projektu.';
+  }
+
+  if (record.entityType === 'plans') {
+    return buildPersonalDevelopmentPlanText(record, client);
   }
 
   const documentText = cleanGeneratedText(record.documentText || '');
@@ -1285,6 +1466,10 @@ function App() {
   const [dashboardFilters, setDashboardFilters] = useState(emptyFilters);
   const [zorTexts, setZorTexts] = useState(null);
   const [expandedJourneyRecordIds, setExpandedJourneyRecordIds] = useState([]);
+  const [selectedJourneyPrintIds, setSelectedJourneyPrintIds] = useState([]);
+  const [journeyPlanDrafts, setJourneyPlanDrafts] = useState({});
+  const [journeyPlanStructuredDrafts, setJourneyPlanStructuredDrafts] = useState({});
+  const [generatingJourneyPlanId, setGeneratingJourneyPlanId] = useState('');
   const [editingKa01NetworkRecordId, setEditingKa01NetworkRecordId] = useState('');
   const [editingGeneratedRecordId, setEditingGeneratedRecordId] = useState('');
   const [editingKa03RecordId, setEditingKa03RecordId] = useState('');
@@ -1549,6 +1734,10 @@ function App() {
 
   const selectedClient = selectedClientId ?clientIndex[selectedClientId] : null;
 
+  useEffect(() => {
+    setSelectedJourneyPrintIds([]);
+  }, [selectedClientId]);
+
   const recordsByType = useMemo(() => groupRecordsByType(records), [records]);
 
   const selectedReportingPeriod = useMemo(
@@ -1587,6 +1776,31 @@ function App() {
     });
   }, [clients, filteredRecords]);
 
+  const supportThresholdMetrics = useMemo(() => {
+    const supportByClient = new Map();
+    filteredRecords.forEach((record) => {
+      const clientIds = Array.isArray(record.clientIds) ? record.clientIds : record.clientId ? [record.clientId] : [];
+      const minutes = Number(record.payload?.durationMinutes || 0);
+      if (!minutes || clientIds.length === 0) return;
+      clientIds.forEach((clientId) => {
+        supportByClient.set(clientId, (supportByClient.get(clientId) || 0) + minutes);
+      });
+    });
+
+    let under40 = 0;
+    let atLeast40 = 0;
+    clients.forEach((client) => {
+      const hours = (supportByClient.get(client.id) || 0) / 60;
+      if (hours >= 40) atLeast40 += 1;
+      else if (hours > 0) under40 += 1;
+    });
+
+    return [
+      { key: 'clients-under-40-hours', label: 'Klienti pod 40 h podpory', current: under40, target: 0, ka: 'Podpora' },
+      { key: 'clients-at-least-40-hours', label: 'Klienti 40+ h podpory', current: atLeast40, target: clients.length, ka: 'Podpora' }
+    ];
+  }, [clients, filteredRecords]);
+
   const periodRecordsForZor = useMemo(
     () => storedActivityRecords.filter((record) => isDateWithinPeriod(record.activityDate || '', selectedReportingPeriod)),
     [selectedReportingPeriod, storedActivityRecords]
@@ -1610,7 +1824,7 @@ function App() {
         const clientIds = Array.isArray(record.clientIds) ?record.clientIds : record.clientId ?[record.clientId] : [];
         return clientIds.includes(selectedClient.id) && CLIENT_JOURNEY_ENTITY_TYPES.has(record.entityType);
       })
-      .sort(compareTimelineRecordsAsc)
+      .sort(compareTimelineRecordsDesc)
       .map((record) => ({
         ...record,
         isSynthetic: false
@@ -1633,7 +1847,7 @@ function App() {
         }]
       : [];
 
-    return [...syntheticEntry, ...timelineRecords].sort(compareTimelineRecordsAsc);
+    return [...syntheticEntry, ...timelineRecords].sort(compareTimelineRecordsDesc);
   }, [records, selectedClient]);
 
   const selectedClientSupportBreakdown = useMemo(() => {
@@ -2337,7 +2551,11 @@ function App() {
       ].join('\n');
     })();
 
+    const exactGeneratorFacts = buildExactGeneratorFacts(generatorConfig, generatorDraft);
     const promptParts = [
+      {
+        text: exactGeneratorFacts
+      },
       {
         text: generatorConfig.buildUserPrompt({
           client: generatorClient,
@@ -2395,6 +2613,9 @@ function App() {
       ],
       systemInstruction: {
         parts: [
+          {
+            text: `Závazná data z formuláře: datum aktivity je "${generatorDraft.date || todayIso()}" a délka podpory je "${formatSupportDuration(getGeneratorSupportMinutes(generatorDraft))}". Tyto hodnoty ve výstupu použij přesně, neměň je a nedoplňuj jiné datum ani jiný rozsah podpory.`
+          },
           {
             text: `${generatorConfig.buildSystemPrompt()}${kaContextInstruction ?`\n\n${kaContextInstruction}` : ''}\n\nNadřazené pravidlo pro typ výstupu: ${
               isPersonalDevelopmentPlan
@@ -2469,7 +2690,7 @@ function App() {
               role: 'user',
               parts: [
                 {
-                  text: `Původní zadání dokumentu:\n${generatorConfig.buildUserPrompt({
+                  text: `Původní zadání dokumentu:\n${exactGeneratorFacts}\n\n${generatorConfig.buildUserPrompt({
                     client: generatorClient,
                     fields: generatorDraft
                   })}`
@@ -3659,6 +3880,48 @@ function App() {
     setMainView(nextView);
   };
 
+  const formatHoursForExport = (hours) => {
+    const safeHours = Number(hours || 0);
+    const totalMinutes = Math.round(safeHours * 60);
+    const wholeHours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    const decimalHours = (totalMinutes / 60).toFixed(1).replace('.', ',');
+    return `${decimalHours} hod (${String(wholeHours).padStart(2, '0')}hod${String(minutes).padStart(2, '0')}min)`;
+  };
+
+  const getClientDashboardExportStats = (clientId) => {
+    const clientRecords = records.filter((record) => {
+      const clientIds = Array.isArray(record.clientIds) ? record.clientIds : record.clientId ? [record.clientId] : [];
+      return clientIds.includes(clientId);
+    });
+
+    const minutesFor = (predicate) => clientRecords
+      .filter(predicate)
+      .reduce((sum, record) => sum + Number(record.payload?.durationMinutes || 0), 0);
+
+    const workCounselingMinutes = minutesFor((record) =>
+      record.entityType === 'consultations' && String(record.payload?.consultationType || '').toLowerCase().includes('pracovn')
+    );
+    const debtCounselingMinutes = minutesFor((record) => {
+      const consultationType = String(record.payload?.consultationType || '').toLowerCase();
+      const title = String(record.title || '').toLowerCase();
+      return record.entityType === 'debt_cases' ||
+        (record.entityType === 'consultations' && (consultationType.includes('dluh') || consultationType.includes('mapov') || title.includes('mapov')));
+    });
+    const tpmMonths = clientRecords
+      .filter((record) => record.entityType === 'tpm_records')
+      .reduce((sum, record) => sum + Number(record.payload?.actualMonths || record.payload?.plannedMonths || 0), 0);
+    const employmentMonths = clientRecords
+      .filter((record) => record.entityType === 'employment_records')
+      .reduce((sum, record) => sum + Number(record.payload?.employmentActualMonths || record.payload?.employmentPlannedMonths || 0), 0);
+
+    return {
+      workCounselingHours: workCounselingMinutes / 60,
+      debtCounselingHours: debtCounselingMinutes / 60,
+      tpmMonths,
+      employmentMonths
+    };
+  };
   const exportActivitiesCsv = () => {
     const rows = filteredRecords.map((record) => [
       record.activityDate || '',
@@ -3680,6 +3943,7 @@ function App() {
   const exportClientsCsv = () => {
     const rows = clients.map((client) => {
       const clientStats = getClientStats(client.id, records);
+      const dashboardStats = getClientDashboardExportStats(client.id);
       return [
         client.id,
         client.fullName,
@@ -3691,7 +3955,11 @@ function App() {
         client.datumVstupu || '',
         client.datumVystupu || '',
         clientStats.activities,
-        clientStats.supportMinutes
+        formatHoursForExport(clientStats.supportHours),
+        formatHoursForExport(dashboardStats.workCounselingHours),
+        formatHoursForExport(dashboardStats.debtCounselingHours),
+        dashboardStats.tpmMonths,
+        dashboardStats.employmentMonths
       ];
     });
 
@@ -3707,13 +3975,21 @@ function App() {
         'Datum vstupu',
         'Datum výstupu',
         'Počet aktivit',
-        'Celková podpora (min)'
+        'Celková podpora',
+        'Pracovní poradenství',
+        'Dluhové poradenství',
+        'TPM měsíce',
+        'HPP měsíce'
       ],
       rows,
       'klienti-projektu.csv'
     );
   };
 
+  const exportAllRecordsBackup = () => {
+    const content = buildAllRecordsBackupHtml(records, clients);
+    downloadHtmlDocument(content, `zaloha-vsech-zapisu-${todayIso()}.doc`);
+  };
   const exportIndicatorsCsv = () => {
     const rows = computedIndicators.map((item) => [
       item.ka,
@@ -3794,6 +4070,97 @@ function App() {
       record.title || 'zapis'
     ];
     downloadHtmlDocument(content, `${slugify(filenameParts.join('-'))}.doc`);
+  };
+
+  const toggleJourneyPrintSelection = (recordId) => {
+    setSelectedJourneyPrintIds((prev) =>
+      prev.includes(recordId) ? prev.filter((item) => item !== recordId) : [...prev, recordId]
+    );
+  };
+
+  const exportSelectedJourneyRecords = () => {
+    if (!selectedClient) return;
+    const selectedRecords = clientJourneyTimeline.filter((record) => selectedJourneyPrintIds.includes(record.id));
+    if (!selectedRecords.length) {
+      setFlash('Nejprve zaškrtni alespoň jeden zápis v klientské ose.');
+      return;
+    }
+    const content = buildSelectedJourneyPrintHtml(selectedClient, selectedRecords);
+    downloadHtmlDocument(content, `vybrane-zapisy-${slugify(selectedClient.fullName)}-${todayIso()}.doc`);
+  };
+
+  const buildJourneyPlanAiPrompt = (record) => [
+    'Vylepši Plán osobního rozvoje klienta ve stejné struktuře, jakou používá formulář KA02.',
+    'Vrať pouze validní JSON bez Markdownu a bez komentáře.',
+    'JSON musí mít klíče: strengthsAndLimits, identifiedBarriers, goals, finalEvaluation, acceptedPlanText.',
+    'Pole goals musí být pole objektů se stejnými goalId jako ve vstupu. Neměň goalId, nemaž cíle, nepřidávej nové cíle a neměň termíny. Termín můžeš opsat pouze do acceptedPlanText.',
+    'Smíš zlepšit a rozvést formulace v polích strengthsAndLimits, identifiedBarriers, goals[].goalDescription a goals[].actionSteps. Zachovej ale původní význam.',
+    'acceptedPlanText vytvoř jako čitelný souvislý plán pro klientskou složku podle těchto stejných polí. Neuváděj věty typu "Žádná specifická data nebyla poskytnuta".',
+    'Nepřidávej nová fakta, diagnózy, zaměstnavatele, termíny ani výsledky.',
+    '',
+    'Aktuální struktura formuláře KA02:',
+    JSON.stringify(buildStructuredPlanForAi(record), null, 2)
+  ].join('\n');
+
+  const handleGenerateJourneyPlanDraft = async (record) => {
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
+    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
+    if (!apiKey) {
+      const fallbackRecord = buildPlanRecordWithStructuredDraft(record, buildStructuredPlanForAi(record), selectedClient);
+      setJourneyPlanStructuredDrafts((prev) => ({ ...prev, [record.id]: buildStructuredPlanForAi(record) }));
+      setJourneyPlanDrafts((prev) => ({ ...prev, [record.id]: buildPersonalDevelopmentPlanText(fallbackRecord, selectedClient) }));
+      setFlash('AI klíč není nastavený. Vložil jsem strukturovaný návrh bez AI.');
+      return;
+    }
+
+    setGeneratingJourneyPlanId(record.id);
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: buildJourneyPlanAiPrompt(record) }] }],
+          systemInstruction: {
+            parts: [{ text: 'Jsi zkušený pracovní poradce v projektu OPZ+. Vylepšuješ strukturovaný plán osobního rozvoje, ale zachováváš vazby na cíle. Vracej pouze validní JSON podle požadovaného schématu.' }]
+          },
+          generationConfig: { temperature: 0.45, maxOutputTokens: 6144 }
+        })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result?.error?.message || `AI požadavek selhal se stavem ${response.status}.`);
+      const structuredDraft = parseStructuredPlanAiResult(extractGeminiText(result), record);
+      const previewRecord = buildPlanRecordWithStructuredDraft(record, structuredDraft, selectedClient);
+      const text = buildPersonalDevelopmentPlanText(previewRecord, selectedClient);
+      setJourneyPlanStructuredDrafts((prev) => ({ ...prev, [record.id]: structuredDraft }));
+      setJourneyPlanDrafts((prev) => ({ ...prev, [record.id]: text }));
+      setFlash('AI návrh plánu osobního rozvoje je připravený v detailu záznamu.');
+    } catch (error) {
+      console.error('Journey plan AI error:', error);
+      setJourneyPlanStructuredDrafts((prev) => ({ ...prev, [record.id]: buildStructuredPlanForAi(record) }));
+      setJourneyPlanDrafts((prev) => ({ ...prev, [record.id]: buildPersonalDevelopmentPlanText(record, selectedClient) }));
+      setFlash('AI návrh se nepodařilo vytvořit. Vložil jsem strukturovaný návrh bez AI.');
+    } finally {
+      setGeneratingJourneyPlanId('');
+    }
+  };
+
+  const handleAcceptJourneyPlanDraft = async (record) => {
+    const text = cleanGeneratedText(journeyPlanDrafts[record.id] || '');
+    if (!text) {
+      setFlash('Nejprve vygeneruj nebo doplň návrh plánu.');
+      return;
+    }
+    const structuredDraft = journeyPlanStructuredDrafts[record.id] || {
+      ...buildStructuredPlanForAi(record),
+      acceptedPlanText: text
+    };
+    const updatedPlanRecord = buildPlanRecordWithStructuredDraft(record, { ...structuredDraft, acceptedPlanText: text }, selectedClient);
+    const ok = await updateExistingRecord(record.id, updatedPlanRecord);
+    if (ok) {
+      setJourneyPlanDrafts((prev) => ({ ...prev, [record.id]: text }));
+      setJourneyPlanStructuredDrafts((prev) => ({ ...prev, [record.id]: updatedPlanRecord }));
+      setFlash('Návrh plánu byl přijat a propsán do struktury formuláře v KA02.');
+    }
   };
 
   const editJourneyRecord = (record) => {
@@ -4071,10 +4438,7 @@ function App() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className={`text-xs font-semibold uppercase tracking-[0.22em] ${viewTheme.label}`}>Projektové výkaznictví</p>
-              <h1 className="mt-1 text-2xl font-bold text-slate-900">Komplexní evidence KA01, KA02 a KA03</h1>
-              <p className="mt-1 text-sm text-slate-500">
-                Google Sheets slouží jako klientský registr, Firestore drží auditní evidenci aktivit, dokumentů a indikátorů.
-              </p>
+              <h1 className="mt-1 text-2xl font-bold text-slate-900">PRACOVNÍ PORADENSTVÍ</h1>
             </div>
             <div className="grid gap-2 text-sm sm:grid-cols-2">
               <TopMetric label="Klienti v registru" value={String(clients.length)} icon={Users} tone="indigo" />
@@ -4467,6 +4831,20 @@ function App() {
                     </Panel>
 
                     <Panel title="Klientská osa" description="Přehled klientské cesty od zařazení přes KA02 po KA03 a dokumenty." icon={History}>
+                      <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="text-xs text-slate-500">
+                          Zaškrtni zápisy, které chceš vytisknout společně. Podpis klienta bude jen jednou na konci dokumentu.
+                        </div>
+                        <button
+                          type="button"
+                          onClick={exportSelectedJourneyRecords}
+                          disabled={selectedJourneyPrintIds.length === 0}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          <Printer className="h-4 w-4" />
+                          Tisk vybraných záznamů ({selectedJourneyPrintIds.length})
+                        </button>
+                      </div>
                       <div className="mb-3 grid gap-3 md:grid-cols-4">
                         <InfoCard icon={History} label="Položky na ose" value={String(clientJourneyTimeline.length)} />
                         <InfoCard icon={Clock} label="Čas podpory" value={`${getClientStats(selectedClient.id, clientJourneyTimeline).supportHours.toFixed(1)} h`} />
@@ -4482,11 +4860,26 @@ function App() {
                             const tone = JOURNEY_TONE_CLASSES[meta.tone] || JOURNEY_TONE_CLASSES.slate;
                             const Icon = meta.icon;
                             const summary = buildClientJourneySummary(record);
-                            const detail = buildClientJourneyDetail(record);
+                            const detail = buildClientJourneyDetail(record, selectedClient);
                             const isExpanded = expandedJourneyRecordIds.includes(record.id);
 
                             return (
-                              <div key={record.id} className="grid gap-2 md:grid-cols-[96px_24px_minmax(0,1fr)] md:items-start">
+                              <div key={record.id} className="grid gap-2 md:grid-cols-[72px_96px_24px_minmax(0,1fr)] md:items-start">
+                                <div className="flex justify-start pt-0.5">
+                                  <label className={`flex min-h-12 w-16 flex-col items-center justify-center gap-1 rounded-xl border px-2 py-1.5 text-[10px] font-bold uppercase tracking-wide shadow-sm transition ${record.isSynthetic ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-55' : selectedJourneyPrintIds.includes(record.id) ? 'cursor-pointer border-slate-900 bg-slate-900 text-white' : 'cursor-pointer border-slate-300 bg-white text-slate-600 hover:border-slate-500 hover:bg-slate-50'}`} title={record.isSynthetic ? 'Zařazení klienta není samostatný tisknutelný zápis.' : 'Zařadit zápis do společného tisku'}>
+                                    <span className="inline-flex items-center gap-1">
+                                      <Printer className="h-3 w-3" />
+                                      Tisk
+                                    </span>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedJourneyPrintIds.includes(record.id)}
+                                      disabled={record.isSynthetic}
+                                      onChange={() => toggleJourneyPrintSelection(record.id)}
+                                      className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+                                    />
+                                  </label>
+                                </div>
                                 <div className="pt-1 text-xs font-semibold text-slate-500">{formatDateLabel(record.activityDate)}</div>
                                 <div className="relative flex h-full justify-center">
                                   <div className={`relative z-[1] mt-1 h-6 w-6 rounded-full border-4 border-white shadow-sm ${tone.dot}`} />
@@ -4572,8 +4965,46 @@ function App() {
                                     </div>
                                   )}
                                   {isExpanded && (
-                                    <div className="mt-2 whitespace-pre-wrap rounded-xl border border-slate-200 bg-white p-3 text-sm leading-relaxed text-slate-800">
-                                      {detail}
+                                    <div className="mt-2 space-y-3">
+                                      <div className="whitespace-pre-wrap rounded-xl border border-slate-200 bg-white p-3 text-sm leading-relaxed text-slate-800">
+                                        {detail}
+                                      </div>
+                                      {record.entityType === 'plans' && !record.isSynthetic && (
+                                        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
+                                          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                            <div>
+                                              <div className="text-sm font-bold text-amber-950">AI návrh plánu osobního rozvoje</div>
+                                              <div className="text-xs text-amber-800">Návrh se po přijetí uloží zpět do stejného záznamu plánu v KA02.</div>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                              <button
+                                                type="button"
+                                                onClick={() => handleGenerateJourneyPlanDraft(record)}
+                                                disabled={generatingJourneyPlanId === record.id || isSaving}
+                                                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white hover:bg-indigo-700 disabled:opacity-60"
+                                              >
+                                                {generatingJourneyPlanId === record.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                                                Vygenerovat návrh
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleAcceptJourneyPlanDraft(record)}
+                                                disabled={isSaving || !String(journeyPlanDrafts[record.id] || '').trim()}
+                                                className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                                              >
+                                                <Save className="h-3.5 w-3.5" />
+                                                Přijmout návrh
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <textarea
+                                            value={journeyPlanDrafts[record.id] ?? buildPersonalDevelopmentPlanText(record, selectedClient)}
+                                            onChange={(event) => setJourneyPlanDrafts((prev) => ({ ...prev, [record.id]: event.target.value }))}
+                                            rows={14}
+                                            className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm leading-relaxed outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                                          />
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                   {record.documentText && (
@@ -4884,10 +5315,9 @@ function App() {
           <React.Suspense fallback={<LazyViewFallback />}>
             <ReportingView
               computedIndicators={computedIndicators}
+              supportThresholdMetrics={supportThresholdMetrics}
               exportClientsCsv={exportClientsCsv}
-              exportActivitiesCsv={exportActivitiesCsv}
-              exportIndicatorsCsv={exportIndicatorsCsv}
-              exportMonitoringBundle={exportMonitoringBundle}
+              exportAllRecordsBackup={exportAllRecordsBackup}
               dashboardFilters={dashboardFilters}
               setDashboardFilters={setDashboardFilters}
               filteredRecords={filteredRecords}
