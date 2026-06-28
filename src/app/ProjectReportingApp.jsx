@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import {
@@ -2485,7 +2485,7 @@ function App() {
     setGenerationNotice('Generuji text přes Gemini 2.5...');
 
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
-    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
+    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.5-flash-lite';
     const maxOutputTokens = generatorDraft.selectedKey === 'therapy' ? 8192 : 4096;
     if (!apiKey) {
       const fallback = buildFallbackGeneratedText(generatorConfig.label, generatorClient, generatorDraft);
@@ -2979,7 +2979,7 @@ function App() {
     }
 
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
-    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
+    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.5-flash-lite';
     if (!apiKey) {
       setFlash('AI korektura KA01 není dostupná, protože není nastavený Gemini API klíč. Aktivita nebyla uložena.');
       return null;
@@ -4012,7 +4012,7 @@ function App() {
     if (!selectedClient) return;
     const fallbackSummary = buildClientCaseSummary(selectedClient, clientJourneyTimeline, selectedClientSupportBreakdown);
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
-    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
+    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
     if (!apiKey) {
       setClientCaseSummary(fallbackSummary);
@@ -4104,7 +4104,7 @@ function App() {
 
   const handleGenerateJourneyPlanDraft = async (record) => {
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
-    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
+    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.5-flash-lite';
     if (!apiKey) {
       const fallbackRecord = buildPlanRecordWithStructuredDraft(record, buildStructuredPlanForAi(record), selectedClient);
       setJourneyPlanStructuredDrafts((prev) => ({ ...prev, [record.id]: buildStructuredPlanForAi(record) }));
