@@ -1465,6 +1465,8 @@ function App() {
   const [clientCaseSummary, setClientCaseSummary] = useState('');
   const [dashboardFilters, setDashboardFilters] = useState(emptyFilters);
   const [zorTexts, setZorTexts] = useState(null);
+  const [backupStatus, setBackupStatus] = useState({ state: 'idle', message: 'Záloha zatím nebyla vytvořena.' });
+  const [isBackupActionRunning, setIsBackupActionRunning] = useState(false);
   const [expandedJourneyRecordIds, setExpandedJourneyRecordIds] = useState([]);
   const [selectedJourneyPrintIds, setSelectedJourneyPrintIds] = useState([]);
   const [journeyPlanDrafts, setJourneyPlanDrafts] = useState({});
@@ -3990,6 +3992,81 @@ function App() {
     const content = buildAllRecordsBackupHtml(records, clients);
     downloadHtmlDocument(content, `zaloha-vsech-zapisu-${todayIso()}.doc`);
   };
+
+  const postGoogleDriveAction = async (payload) => {
+    if (!GOOGLE_DRIVE_UPLOAD_URL) throw new Error('Google Drive propojení zatím není nastavené.');
+    const response = await fetch(GOOGLE_DRIVE_UPLOAD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error('Google Drive akce selhala: ' + response.status);
+    const result = await response.json().catch(() => ({}));
+    if (result.ok === false) throw new Error(result.error || 'Google Drive akce selhala.');
+    return result;
+  };
+
+  const loadBackupStatus = async () => {
+    if (!GOOGLE_DRIVE_UPLOAD_URL) return null;
+    try {
+      const url = new URL(GOOGLE_DRIVE_UPLOAD_URL);
+      url.searchParams.set('action', 'getBackupStatus');
+      const response = await fetch(url.toString(), { cache: 'no-store' });
+      if (!response.ok) throw new Error('Načtení stavu zálohy selhalo.');
+      const result = await response.json().catch(() => ({}));
+      if (result.ok === false) throw new Error(result.error || 'Načtení stavu zálohy selhalo.');
+      const nextStatus = result.backup || { state: 'idle', message: 'Záloha zatím nebyla vytvořena.' };
+      setBackupStatus(nextStatus);
+      return nextStatus;
+    } catch (error) {
+      console.warn('Backup status refresh failed:', error);
+      setBackupStatus((previous) => ({ ...previous, statusError: error.message || 'Stav zálohy nelze načíst.' }));
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    if (mainView !== 'dashboard' || !GOOGLE_DRIVE_UPLOAD_URL) return undefined;
+    let active = true;
+    const refresh = async () => {
+      if (active) await loadBackupStatus();
+    };
+    void refresh();
+    const interval = window.setInterval(refresh, 5000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [mainView]);
+
+  const handleStartFullBackup = async () => {
+    if (isBackupActionRunning) return;
+    setIsBackupActionRunning(true);
+    try {
+      const result = await postGoogleDriveAction({ action: 'startFullBackup' });
+      setBackupStatus(result.backup || { state: 'queued', message: 'Záloha čeká na spuštění.' });
+      setFlash('Kompletní ZIP záloha byla zařazena ke zpracování.');
+    } catch (error) {
+      setBackupStatus({ state: 'error', message: error.message || 'Zálohu se nepodařilo spustit.' });
+      setFlash(error.message || 'Zálohu se nepodařilo spustit.');
+    } finally {
+      setIsBackupActionRunning(false);
+    }
+  };
+
+  const handleInstallWeeklyBackup = async () => {
+    if (isBackupActionRunning) return;
+    setIsBackupActionRunning(true);
+    try {
+      const result = await postGoogleDriveAction({ action: 'installWeeklyBackup' });
+      setBackupStatus(result.backup || backupStatus);
+      setFlash('Týdenní automatická ZIP záloha byla zapnuta.');
+    } catch (error) {
+      setFlash(error.message || 'Týdenní zálohu se nepodařilo zapnout.');
+    } finally {
+      setIsBackupActionRunning(false);
+    }
+  };
   const exportIndicatorsCsv = () => {
     const rows = computedIndicators.map((item) => [
       item.ka,
@@ -5328,6 +5405,10 @@ function App() {
               copied={copied}
               deleteRecord={deleteRecord}
               isSaving={isSaving}
+              backupStatus={backupStatus}
+              isBackupActionRunning={isBackupActionRunning}
+              handleStartFullBackup={handleStartFullBackup}
+              handleInstallWeeklyBackup={handleInstallWeeklyBackup}
             />
           </React.Suspense>
         )}
