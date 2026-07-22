@@ -46,6 +46,20 @@ VITE_GOOGLE_DRIVE_UPLOAD_URL=https://script.google.com/macros/s/.../exec
 
 Po změně `.env` restartujte Vite server. Pokud URL není nastavená, aplikace ukládá pouze do interní evidence. Selhání Google Disku neblokuje uložení záznamu v aplikaci.
 
+### Kompletní ZIP zálohy Google Drive
+
+Dashboard umožňuje vytvořit ZIP klientských složek a generovaných dokumentů a zapnout automatickou zálohu každou neděli ve 2:00. Uchovává se posledních 12 ZIP souborů.
+
+Po aktualizaci Apps Scriptu:
+
+1. Do `Code.gs` vložte celý aktuální obsah `google-drive-upload.apps-script.js`.
+2. V manifestu `appsscript.json` ponechte všechny uvedené `oauthScopes`, včetně `https://www.googleapis.com/auth/script.scriptapp`.
+3. Uložte projekt, ručně spusťte funkci `authorizeBackupTriggers` a potvrďte oprávnění.
+4. Vytvořte novou verzi webové implementace.
+5. V dashboardu klikněte na `Vytvořit kompletní ZIP zálohu`.
+
+ZIP zahrnuje složky `PRACOVKO SLOŽKY` a `Projektove vykaznictvi - klienti` a kontrolní `manifest.json`. Firestore není součástí Drive ZIPu; data aplikace se stahují samostatným tlačítkem `Stáhnout všechny zápisy`.
+
 ## Sdilena databaze Firestore
 
 Bez Firebase konfigurace aplikace uklada data jen lokalne do prohlizece. Pro sdileni mezi pocitaci nastavte Firebase Web App a Firestore.

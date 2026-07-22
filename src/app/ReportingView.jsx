@@ -1,5 +1,5 @@
 ﻿import React from 'react';
-import { Activity, Archive, ClipboardCopy, FileSpreadsheet, FileText } from 'lucide-react';
+import { Activity, Archive, ClipboardCopy, Download, FileSpreadsheet, FileText, HardDriveDownload, Loader2, ShieldCheck } from 'lucide-react';
 
 import { Panel, SelectField, StatCard } from '../components/ui.jsx';
 import { REPORTING_PERIODS, WORKERS } from '../config/projectConfig.js';
@@ -18,8 +18,16 @@ function ReportingView({
   setCopied,
   copied,
   deleteRecord,
-  isSaving
+  isSaving,
+  backupStatus = null,
+  isBackupActionRunning = false,
+  handleStartFullBackup,
+  handleInstallWeeklyBackup
 }) {
+  const backupBusy = isBackupActionRunning || ['queued', 'running'].includes(backupStatus?.state);
+  const backupFinishedAt = backupStatus?.finishedAt
+    ? new Date(backupStatus.finishedAt).toLocaleString('cs-CZ')
+    : '';
   return (
           <div className="space-y-6">
             <Panel
@@ -95,6 +103,62 @@ function ReportingView({
                   </div>
                 </div>
               </div>
+            </Panel>
+
+            <Panel
+              title="Kompletní ZIP záloha Google Drive"
+              description="Zálohuje klientské složky, MON listy, smlouvy, souhlasy a generované dokumenty z Google Drive. Uchovává se posledních 12 ZIP záloh. Data Firestore stáhnete samostatně tlačítkem Stáhnout všechny zápisy."
+              icon={HardDriveDownload}
+              action={
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleStartFullBackup}
+                    disabled={backupBusy}
+                    className="inline-flex items-center gap-2 rounded-xl bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {backupBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}
+                    {backupBusy ? 'Záloha se připravuje…' : 'Vytvořit kompletní ZIP zálohu'}
+                  </button>
+                  {!backupStatus?.weeklyEnabled && (
+                    <button
+                      type="button"
+                      onClick={handleInstallWeeklyBackup}
+                      disabled={isBackupActionRunning}
+                      className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+                    >
+                      <ShieldCheck className="h-4 w-4" /> Zapnout týdenní zálohy
+                    </button>
+                  )}
+                  {backupStatus?.downloadUrl && backupStatus?.state === 'success' && (
+                    <a
+                      href={backupStatus.downloadUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                    >
+                      <Download className="h-4 w-4" /> Stáhnout poslední ZIP
+                    </a>
+                  )}
+                </div>
+              }
+            >
+              <div className={`rounded-xl border px-3 py-2 text-sm ${
+                backupStatus?.state === 'error'
+                  ? 'border-red-200 bg-red-50 text-red-800'
+                  : backupStatus?.state === 'success'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                    : 'border-slate-200 bg-slate-50 text-slate-700'
+              }`}>
+                <div className="font-semibold">{backupStatus?.message || 'Záloha zatím nebyla vytvořena.'}</div>
+                <div className="mt-1 text-xs">
+                  Automaticky každou neděli ve 2:00: <strong>{backupStatus?.weeklyEnabled ? 'zapnuto' : 'vypnuto'}</strong>
+                  {backupFinishedAt ? ` · Poslední dokončení: ${backupFinishedAt}` : ''}
+                  {backupStatus?.fileCount ? ` · Souborů v záloze: ${backupStatus.fileCount}` : ''}
+                </div>
+                {backupStatus?.statusError && <div className="mt-1 text-xs text-red-700">{backupStatus.statusError}</div>}
+              </div>
+              <p className="mt-2 text-xs text-slate-500">ZIP je uložen ve složce „Zálohy - Projektové výkaznictví Osoblažsko“ na Google Drive. Pravidelně stahujte kopii také mimo tento Google účet.</p>
             </Panel>
 
             {zorTexts && (
