@@ -121,6 +121,38 @@ function slugify(value) {
     .replace(/^-+|-+$/g, '');
 }
 
+function normalizeWorkerRole(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function matchesDashboardWorker(record, selectedWorker) {
+  if (!selectedWorker || selectedWorker === 'all') return true;
+
+  const normalizedSelection = normalizeWorkerRole(selectedWorker);
+  const workerValues = [
+    record?.worker,
+    record?.payload?.worker,
+    record?.payload?.role
+  ]
+    .map(normalizeWorkerRole)
+    .filter(Boolean);
+
+  if (workerValues.includes(normalizedSelection)) return true;
+
+  if (normalizedSelection === 'terapeut') {
+    return (
+      record?.entityType === 'therapy_sessions' ||
+      workerValues.some((value) => value.includes('terapeut'))
+    );
+  }
+
+  return false;
+}
+
 function formatDate(value) {
   if (!value) return '';
   const stringValue = String(value).trim();
@@ -1837,5 +1869,6 @@ export {
   loadLocalRecords,
   saveLocalRecords,
   slugify,
+  matchesDashboardWorker,
   splitMultiValue
 };

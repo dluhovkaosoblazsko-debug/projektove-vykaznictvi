@@ -106,6 +106,7 @@ import {
   groupRecordsByType,
   loadLocalRecords,
   mapSheetRowToClient,
+  matchesDashboardWorker,
   saveLocalRecords,
   slugify,
   todayIso,
@@ -1823,7 +1824,7 @@ function App() {
     return storedActivityRecords.filter((record) => {
       const matchesPeriod = isDateWithinPeriod(record.activityDate || '', selectedReportingPeriod);
       const matchesKa = dashboardFilters.ka === 'all' || record.ka === dashboardFilters.ka;
-      const matchesWorker = dashboardFilters.worker === 'all' || record.worker === dashboardFilters.worker;
+      const matchesWorker = matchesDashboardWorker(record, dashboardFilters.worker);
       return matchesPeriod && matchesKa && matchesWorker;
     });
   }, [dashboardFilters, selectedReportingPeriod, storedActivityRecords]);
@@ -5481,5 +5482,4 @@ Závazná pravidla:
 }
 
 export default App;
-
 
