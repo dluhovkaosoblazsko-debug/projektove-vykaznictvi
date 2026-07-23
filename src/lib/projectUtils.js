@@ -868,13 +868,102 @@ const CLIENT_SUPPORT_TYPE_META = [
 
 function extractSupportHours(record) {
   const payload = record.payload || {};
-  if (record.entityType === 'plans') return 1;
+  const minutesFromTimes = durationMinutesFromTimes(payload.startTime, payload.endTime);
+  const explicitMinutes = Number(payload.durationMinutes);
+  const durationMinutes =
+    minutesFromTimes ||
+    (Number.isFinite(explicitMinutes) && explicitMinutes > 0 ? explicitMinutes : 0);
+
+  if (record.entityType === 'plans') return (durationMinutes || 60) / 60;
   if (['consultations', 'debt_cases', 'therapy_sessions', 'cv_outputs', 'job_simulators'].includes(record.entityType)) {
-    return durationMinutesFromTimes(payload.startTime, payload.endTime) / 60;
+    return durationMinutes / 60;
   }
-  if (typeof payload.actualHours === 'number') return payload.actualHours;
-  if (typeof payload.durationMinutes === 'number') return payload.durationMinutes / 60;
+  const actualHours = Number(payload.actualHours);
+  if (Number.isFinite(actualHours) && actualHours > 0) return actualHours;
+  if (durationMinutes > 0) return durationMinutes / 60;
   return 0;
+}
+
+function getClientMzExportStats(clientId, records) {
+  const related = records.filter((record) => {
+    const clientIds = Array.isArray(record.clientIds)
+      ? record.clientIds
+      : record.clientId
+        ? [record.clientId]
+        : [];
+    return clientIds.includes(clientId);
+  });
+
+  const minutesFor = (predicate) =>
+    Math.round(
+      related
+        .filter(predicate)
+        .reduce((sum, record) => sum + extractSupportHours(record) * 60, 0)
+    );
+  const normalizedConsultationType = (record) =>
+    String(record.payload?.consultationType || record.title || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+
+  const workCounselingMinutes = minutesFor(
+    (record) =>
+      record.entityType === 'consultations' &&
+      normalizedConsultationType(record).includes('pracovn')
+  );
+  const debtCounselingMinutes = minutesFor((record) => {
+    const type = normalizedConsultationType(record);
+    return (
+      record.entityType === 'debt_cases' ||
+      (record.entityType === 'consultations' && (type.includes('dluh') || type.includes('mapov')))
+    );
+  });
+  const motivationalSupportMinutes = minutesFor(
+    (record) =>
+      record.entityType === 'consultations' &&
+      normalizedConsultationType(record).includes('motivac')
+  );
+  const planMinutes = minutesFor((record) => record.entityType === 'plans');
+  const therapyMinutes = minutesFor((record) => record.entityType === 'therapy_sessions');
+  const cvMinutes = minutesFor((record) => record.entityType === 'cv_outputs');
+  const simulatorMinutes = minutesFor((record) => record.entityType === 'job_simulators');
+  const categorizedMinutes =
+    workCounselingMinutes +
+    debtCounselingMinutes +
+    motivationalSupportMinutes +
+    planMinutes +
+    therapyMinutes +
+    cvMinutes +
+    simulatorMinutes;
+  const totalSupportMinutes = Math.round(
+    related.reduce((sum, record) => sum + extractSupportHours(record) * 60, 0)
+  );
+  const otherSupportMinutes = Math.max(0, totalSupportMinutes - categorizedMinutes);
+  const tpmMonths = related
+    .filter((record) => record.entityType === 'tpm_records')
+    .reduce((sum, record) => sum + Number(record.payload?.actualMonths || record.payload?.plannedMonths || 0), 0);
+  const employmentMonths = related
+    .filter((record) => record.entityType === 'employment_records')
+    .reduce(
+      (sum, record) =>
+        sum +
+        Number(record.payload?.employmentActualMonths || record.payload?.employmentPlannedMonths || 0),
+      0
+    );
+
+  return {
+    totalSupportMinutes,
+    workCounselingMinutes,
+    debtCounselingMinutes,
+    motivationalSupportMinutes,
+    planMinutes,
+    therapyMinutes,
+    cvMinutes,
+    simulatorMinutes,
+    otherSupportMinutes,
+    tpmMonths,
+    employmentMonths
+  };
 }
 
 function getClientSupportBreakdown(clientId, records) {
@@ -882,6 +971,10 @@ function getClientSupportBreakdown(clientId, records) {
     const clientIds = Array.isArray(record.clientIds) ?record.clientIds : [];
     return clientIds.includes(clientId) || record.clientId === clientId;
   });
+  const supportEntityTypes = new Set(CLIENT_SUPPORT_TYPE_META.map((item) => item.key));
+  const totalHoursRaw = related
+    .filter((record) => supportEntityTypes.has(record.entityType))
+    .reduce((sum, record) => sum + extractSupportHours(record), 0);
 
   const byType = CLIENT_SUPPORT_TYPE_META.map((item) => {
     const matching = related.filter((record) => record.entityType === item.key);
@@ -897,8 +990,8 @@ function getClientSupportBreakdown(clientId, records) {
   return {
     totalCount: related.length,
     totalDocuments: related.filter((record) => Boolean(record.documentText)).length,
-    totalHours: Number(byType.reduce((sum, item) => sum + item.hours, 0).toFixed(1)),
-    totalMinutes: Math.round(byType.reduce((sum, item) => sum + item.hours, 0) * 60),
+    totalHours: Number(totalHoursRaw.toFixed(1)),
+    totalMinutes: Math.round(totalHoursRaw * 60),
     byType
   };
 }
@@ -1727,6 +1820,7 @@ export {
   cleanGeneratedText,
   getClientSupportBreakdown,
   getClientStats,
+  getClientMzExportStats,
   buildAddress,
   truncate,
   copyToClipboard,
@@ -1745,5 +1839,3 @@ export {
   slugify,
   splitMultiValue
 };
-
-

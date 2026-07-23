@@ -49,7 +49,7 @@ import {
   APP_VIEWS,
   GOOGLE_DRIVE_UPLOAD_URL,
   GOOGLE_SHEET_MACRO_URL,
-  REPORTING_PERIODS,
+  PROJECT_REPORTING_RANGE,
   REPORT_PROMPTS,
   TARGETS,
   WORKERS,
@@ -99,6 +99,7 @@ import {
   downloadHtmlDocument,
   enrichClient,
   extractGeminiText,
+  getClientMzExportStats,
   getClientSupportBreakdown,
   getClientStats,
   getMockClients,
@@ -657,7 +658,8 @@ const CURRENT_ACTIVITY_ENTITY_TYPES = new Set([
   'job_simulators',
   'tpm_records',
   'employment_records',
-  'mentoring_records'
+  'mentoring_records',
+  'mentor_report_document'
 ]);
 const CLIENT_JOURNEY_ENTITY_TYPES = new Set([
   'plans',
@@ -1189,7 +1191,7 @@ function buildPreviousRecordContext(record) {
 }
 
 function isDateWithinPeriod(dateValue, period) {
-  if (!period || period.value === 'all') return true;
+  if (!period) return true;
   if (!dateValue) return false;
   return dateValue >= period.start && dateValue <= period.end;
 }
@@ -1202,6 +1204,30 @@ function clipText(text, maxLength = 2000) {
 
 function joinSummaryParts(parts) {
   return parts.filter(Boolean).join(' ');
+}
+
+function getNumericFactSignature(text) {
+  return (String(text || '').match(/\d+(?:[.,]\d+)?/g) || [])
+    .map((value) => value.replace(',', '.'))
+    .sort()
+    .join('|');
+}
+
+function acceptAiPolishedZorText(sourceText, candidateText) {
+  const cleaned = cleanGeneratedText(candidateText || '');
+  if (!cleaned || cleaned.length > 2000) return sourceText;
+  if (getNumericFactSignature(cleaned) !== getNumericFactSignature(sourceText)) return sourceText;
+  return cleaned;
+}
+
+function parseZorAiJson(text) {
+  const raw = String(text || '');
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start < 0 || end <= start) {
+    throw new Error('AI nevrátila texty ZOR v očekávaném formátu.');
+  }
+  return JSON.parse(raw.slice(start, end + 1));
 }
 
 function buildKa01ZorText(records) {
@@ -1316,6 +1342,28 @@ function buildKa03ZorText(records) {
       employmentRecords.length ?`Pracovní uplatnění bylo evidováno v ${employmentRecords.length} případech.` : '',
       mentorReports.length ?`Současně vzniklo ${mentorReports.length} referenčních zpráv mentora.` : '',
       employers.length ?`Klienti byli zapojeni zejména u těchto zaměstnavatelů nebo pracovišť: ${employers.join(', ')}.` : ''
+    ])
+  );
+}
+
+function buildNonDiscriminationZorText() {
+  return clipText(
+    joinSummaryParts([
+      'Ve sledovaném období byl princip nediskriminace uplatňován průřezově při realizaci projektových aktivit.',
+      'Při zapojování účastníků a poskytování podpory byl používán individuální a nediskriminační přístup; obsah a rozsah podpory vycházely z konkrétních potřeb, bariér a životní situace účastníků, nikoli z jejich osobních charakteristik.',
+      'Přístup k poradenství, rozvojovým aktivitám a podpoře pracovního uplatnění byl zajišťován za rovných podmínek.',
+      'Komunikace a dokumentace byly vedeny respektujícím způsobem s ohledem na důstojnost, soukromí a rozdílné potřeby účastníků.'
+    ])
+  );
+}
+
+function buildGenderEqualityZorText() {
+  return clipText(
+    joinSummaryParts([
+      'Ve sledovaném období byl při realizaci projektových aktivit uplatňován princip rovných příležitostí žen a mužů.',
+      'Ženy a muži měli rovný přístup k poradenství, rozvojovým aktivitám i podpoře pracovního uplatnění.',
+      'Obsah a intenzita podpory se odvíjely od individuálních potřeb a situace účastníků, nikoli od jejich pohlaví.',
+      'Při pracovním poradenství, volbě profesního směřování a komunikaci se zaměstnavateli nebyly podporovány genderové stereotypy ani odlišné zacházení se ženami a muži.'
     ])
   );
 }
@@ -1442,6 +1490,8 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState(null);
   const [records, setRecords] = useState([]);
+  const [isLoadingRecords, setIsLoadingRecords] = useState(true);
+  const [recordsLoadError, setRecordsLoadError] = useState('');
   const [clients, setClients] = useState([]);
   const [isLoadingClients, setIsLoadingClients] = useState(false);
   const [sheetError, setSheetError] = useState('');
@@ -1457,6 +1507,7 @@ function App() {
   const [generationNotice, setGenerationNotice] = useState('');
   const [aiGenerationStatus, setAiGenerationStatus] = useState('idle');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingZor, setIsGeneratingZor] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isProvisioningClientFolder, setIsProvisioningClientFolder] = useState(false);
   const [isSummarizingCase, setIsSummarizingCase] = useState(false);
@@ -1628,6 +1679,8 @@ function App() {
       } catch (error) {
         console.error('Auth error:', error);
         setFirebaseAuthError('Firebase Authentication není připravené. Ve Firebase zapni Authentication > Sign-in method > Anonymous.');
+        setRecordsLoadError('Záznamy se nepodařilo načíst, protože přihlášení k databázi selhalo.');
+        setIsLoadingRecords(false);
       }
     };
 
@@ -1638,8 +1691,11 @@ function App() {
 
   useEffect(() => {
     if (!user) return undefined;
+    setIsLoadingRecords(true);
+    setRecordsLoadError('');
     if (!hasFirebaseConfig || !db) {
       setRecords(loadLocalRecords());
+      setIsLoadingRecords(false);
       return undefined;
     }
 
@@ -1653,9 +1709,13 @@ function App() {
         }));
         loaded.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         setRecords(loaded);
+        setRecordsLoadError('');
+        setIsLoadingRecords(false);
       },
       (error) => {
         console.error('Firestore snapshot error:', error);
+        setRecordsLoadError('Záznamy z Firestore se nepodařilo načíst. Dashboard proto nemusí obsahovat aktuální data.');
+        setIsLoadingRecords(false);
       }
     );
 
@@ -1741,8 +1801,17 @@ function App() {
   const recordsByType = useMemo(() => groupRecordsByType(records), [records]);
 
   const selectedReportingPeriod = useMemo(
-    () => REPORTING_PERIODS.find((item) => item.value === dashboardFilters.period) || REPORTING_PERIODS[0],
-    [dashboardFilters.period]
+    () => {
+      const start = dashboardFilters.dateFrom || PROJECT_REPORTING_RANGE.start;
+      const end = dashboardFilters.dateTo || PROJECT_REPORTING_RANGE.end;
+      return {
+        value: `${start}_${end}`,
+        label: `${formatDateLabel(start)} – ${formatDateLabel(end)}`,
+        start,
+        end
+      };
+    },
+    [dashboardFilters.dateFrom, dashboardFilters.dateTo]
   );
 
   const storedActivityRecords = useMemo(
@@ -1777,20 +1846,10 @@ function App() {
   }, [clients, filteredRecords]);
 
   const supportThresholdMetrics = useMemo(() => {
-    const supportByClient = new Map();
-    filteredRecords.forEach((record) => {
-      const clientIds = Array.isArray(record.clientIds) ? record.clientIds : record.clientId ? [record.clientId] : [];
-      const minutes = Number(record.payload?.durationMinutes || 0);
-      if (!minutes || clientIds.length === 0) return;
-      clientIds.forEach((clientId) => {
-        supportByClient.set(clientId, (supportByClient.get(clientId) || 0) + minutes);
-      });
-    });
-
     let under40 = 0;
     let atLeast40 = 0;
     clients.forEach((client) => {
-      const hours = (supportByClient.get(client.id) || 0) / 60;
+      const hours = getClientMzExportStats(client.id, filteredRecords).totalSupportMinutes / 60;
       if (hours >= 40) atLeast40 += 1;
       else if (hours > 0) under40 += 1;
     });
@@ -2102,7 +2161,7 @@ function App() {
 
   useEffect(() => {
     setZorTexts(null);
-  }, [dashboardFilters.period]);
+  }, [dashboardFilters.dateFrom, dashboardFilters.dateTo]);
 
   const setFlash = (message) => {
     setStatusMessage(message);
@@ -3889,39 +3948,7 @@ function App() {
     return `${decimalHours} hod (${String(wholeHours).padStart(2, '0')}hod${String(minutes).padStart(2, '0')}min)`;
   };
 
-  const getClientDashboardExportStats = (clientId) => {
-    const clientRecords = records.filter((record) => {
-      const clientIds = Array.isArray(record.clientIds) ? record.clientIds : record.clientId ? [record.clientId] : [];
-      return clientIds.includes(clientId);
-    });
-
-    const minutesFor = (predicate) => clientRecords
-      .filter(predicate)
-      .reduce((sum, record) => sum + Number(record.payload?.durationMinutes || 0), 0);
-
-    const workCounselingMinutes = minutesFor((record) =>
-      record.entityType === 'consultations' && String(record.payload?.consultationType || '').toLowerCase().includes('pracovn')
-    );
-    const debtCounselingMinutes = minutesFor((record) => {
-      const consultationType = String(record.payload?.consultationType || '').toLowerCase();
-      const title = String(record.title || '').toLowerCase();
-      return record.entityType === 'debt_cases' ||
-        (record.entityType === 'consultations' && (consultationType.includes('dluh') || consultationType.includes('mapov') || title.includes('mapov')));
-    });
-    const tpmMonths = clientRecords
-      .filter((record) => record.entityType === 'tpm_records')
-      .reduce((sum, record) => sum + Number(record.payload?.actualMonths || record.payload?.plannedMonths || 0), 0);
-    const employmentMonths = clientRecords
-      .filter((record) => record.entityType === 'employment_records')
-      .reduce((sum, record) => sum + Number(record.payload?.employmentActualMonths || record.payload?.employmentPlannedMonths || 0), 0);
-
-    return {
-      workCounselingHours: workCounselingMinutes / 60,
-      debtCounselingHours: debtCounselingMinutes / 60,
-      tpmMonths,
-      employmentMonths
-    };
-  };
+  const formatMinutesForExport = (minutes) => formatHoursForExport(Number(minutes || 0) / 60);
   const exportActivitiesCsv = () => {
     const rows = filteredRecords.map((record) => [
       record.activityDate || '',
@@ -3942,8 +3969,8 @@ function App() {
 
   const exportClientsCsv = () => {
     const rows = clients.map((client) => {
-      const clientStats = getClientStats(client.id, records);
-      const dashboardStats = getClientDashboardExportStats(client.id);
+      const clientStats = getClientStats(client.id, filteredRecords);
+      const dashboardStats = getClientMzExportStats(client.id, filteredRecords);
       return [
         client.id,
         client.fullName,
@@ -3955,9 +3982,15 @@ function App() {
         client.datumVstupu || '',
         client.datumVystupu || '',
         clientStats.activities,
-        formatHoursForExport(clientStats.supportHours),
-        formatHoursForExport(dashboardStats.workCounselingHours),
-        formatHoursForExport(dashboardStats.debtCounselingHours),
+        formatMinutesForExport(dashboardStats.totalSupportMinutes),
+        formatMinutesForExport(dashboardStats.workCounselingMinutes),
+        formatMinutesForExport(dashboardStats.debtCounselingMinutes),
+        formatMinutesForExport(dashboardStats.motivationalSupportMinutes),
+        formatMinutesForExport(dashboardStats.planMinutes),
+        formatMinutesForExport(dashboardStats.therapyMinutes),
+        formatMinutesForExport(dashboardStats.cvMinutes),
+        formatMinutesForExport(dashboardStats.simulatorMinutes),
+        formatMinutesForExport(dashboardStats.otherSupportMinutes),
         dashboardStats.tpmMonths,
         dashboardStats.employmentMonths
       ];
@@ -3978,11 +4011,17 @@ function App() {
         'Celková podpora',
         'Pracovní poradenství',
         'Dluhové poradenství',
+        'Motivační podpora',
+        'Plány rozvoje',
+        'Terapie',
+        'CV a motivační dopis',
+        'Pracovní simulátor',
+        'Ostatní časová podpora',
         'TPM měsíce',
         'HPP měsíce'
       ],
       rows,
-      'klienti-projektu.csv'
+      `klienti-podpora-${selectedReportingPeriod.start}_${selectedReportingPeriod.end}.csv`
     );
   };
 
@@ -4403,9 +4442,13 @@ function App() {
     downloadHtmlDocument(content, 'souhrnna-monitorovaci-dokumentace.doc');
   };
 
-  const handleGenerateZorTexts = () => {
-    if (!selectedReportingPeriod || selectedReportingPeriod.value === 'all') {
-      setFlash('Nejprve vyber konkrétní vykazované období.');
+  const handleGenerateZorTexts = async () => {
+    if (
+      !selectedReportingPeriod?.start ||
+      !selectedReportingPeriod?.end ||
+      selectedReportingPeriod.start > selectedReportingPeriod.end
+    ) {
+      setFlash('Zkontroluj začátek a konec vykazovaného období.');
       return;
     }
 
@@ -4415,16 +4458,114 @@ function App() {
       KA03: periodRecordsForZor.filter((record) => record.ka === 'KA03' || ['tpm_records', 'mentoring_records', 'employment_records', 'mentor_report_document'].includes(record.entityType))
     };
 
-    setZorTexts({
+    const baseTexts = {
+      KA01: buildKa01ZorText(recordsByKa.KA01),
+      KA02: buildKa02ZorText(recordsByKa.KA02),
+      KA03: buildKa03ZorText(recordsByKa.KA03),
+      Nediskriminace: buildNonDiscriminationZorText(),
+      'Rovné příležitosti žen a mužů': buildGenderEqualityZorText()
+    };
+    const baseResult = {
       periodLabel: selectedReportingPeriod.label,
       generatedAt: new Date().toISOString(),
-      texts: {
-        KA01: buildKa01ZorText(recordsByKa.KA01),
-        KA02: buildKa02ZorText(recordsByKa.KA02),
-        KA03: buildKa03ZorText(recordsByKa.KA03)
+      aiEnhanced: false,
+      texts: baseTexts
+    };
+    setZorTexts(baseResult);
+
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
+    const aiModel = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
+    if (!apiKey) {
+      setFlash(`Texty pro ZOR byly připraveny za období ${selectedReportingPeriod.label}. AI klíč není nastavený, proto zůstává bezpečný pracovní návrh.`);
+      return;
+    }
+
+    setIsGeneratingZor(true);
+    setFlash('Připravuji a jazykově vylepšuji texty pro ZOR…');
+    const aiSource = {
+      ka01: baseTexts.KA01,
+      ka02: baseTexts.KA02,
+      ka03: baseTexts.KA03,
+      nonDiscrimination: baseTexts.Nediskriminace,
+      genderEquality: baseTexts['Rovné příležitosti žen a mužů']
+    };
+    const payload = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: `Vykazované období: ${selectedReportingPeriod.label}\n\nOvěřené pracovní texty:\n${JSON.stringify(aiSource, null, 2)}`
+            }
+          ]
+        }
+      ],
+      systemInstruction: {
+        parts: [
+          {
+            text: `Jsi odborný jazykový editor Zprávy o realizaci projektu OPZ+. Uprav pouze styl dodaných pracovních textů do přirozené, věcné a profesionální češtiny vhodné k vložení do ZOR.
+
+Závazná pravidla:
+- Zachovej přesně všechny počty, hodiny, měsíce a další číselné údaje. Žádný číselný údaj nepřidávej ani nevynechávej.
+- Nevymýšlej aktivity, výsledky, dopady, účastníky, zaměstnavatele ani problémy, které nejsou ve vstupu.
+- Neměň význam a neslučuj jednotlivé části.
+- Texty KA01, KA02 a KA03 formuluj jako stručný popis skutečně evidované realizace ve sledovaném období.
+- Text Nediskriminace ponech obecný a popisuj pouze rovný, individuální a respektující přístup.
+- Text Rovné příležitosti žen a mužů ponech obecný; nezmiňuj udržitelný rozvoj ani jiné horizontální principy.
+- Nepoužívej osobní jména, Markdown, nadpisy ani odrážky.
+- Každý text musí mít nejvýše 2000 znaků.
+- Vrať pouze platný JSON se stejnými pěti klíči jako ve vstupu.`
+          }
+        ]
+      },
+      generationConfig: {
+        temperature: 0.25,
+        maxOutputTokens: 4096,
+        responseMimeType: 'application/json'
       }
-    });
-    setFlash(`Texty pro ZOR byly připraveny za období ${selectedReportingPeriod.label}.`);
+    };
+
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        }
+      );
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error?.message || `AI požadavek selhal se stavem ${response.status}.`);
+      }
+
+      const polished = parseZorAiJson(extractGeminiText(result));
+      const enhancedTexts = {
+        KA01: acceptAiPolishedZorText(baseTexts.KA01, polished.ka01),
+        KA02: acceptAiPolishedZorText(baseTexts.KA02, polished.ka02),
+        KA03: acceptAiPolishedZorText(baseTexts.KA03, polished.ka03),
+        Nediskriminace: acceptAiPolishedZorText(baseTexts.Nediskriminace, polished.nonDiscrimination),
+        'Rovné příležitosti žen a mužů': acceptAiPolishedZorText(
+          baseTexts['Rovné příležitosti žen a mužů'],
+          polished.genderEquality
+        )
+      };
+      setZorTexts({
+        periodLabel: selectedReportingPeriod.label,
+        generatedAt: new Date().toISOString(),
+        aiEnhanced: true,
+        texts: enhancedTexts
+      });
+      setFlash(`Texty pro ZOR byly připraveny a jazykově vylepšeny za období ${selectedReportingPeriod.label}.`);
+    } catch (error) {
+      console.error('ZOR AI polishing error:', error);
+      setZorTexts(baseResult);
+      setFlash(`${error.message || 'AI úprava textů ZOR selhala.'} Zůstává bezpečný pracovní návrh bez AI úprav.`);
+    } finally {
+      setIsGeneratingZor(false);
+    }
   };
 
   const viewTheme = VIEW_THEMES[mainView] || VIEW_THEMES.clients;
@@ -5328,6 +5469,9 @@ function App() {
               copied={copied}
               deleteRecord={deleteRecord}
               isSaving={isSaving}
+              isGeneratingZor={isGeneratingZor}
+              isLoadingRecords={isLoadingRecords}
+              recordsLoadError={recordsLoadError}
             />
           </React.Suspense>
         )}
@@ -5337,11 +5481,5 @@ function App() {
 }
 
 export default App;
-
-
-
-
-
-
 
 

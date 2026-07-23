@@ -262,13 +262,10 @@ const APP_VIEWS = [
   { id: 'dashboard', name: 'Dashboard', icon: BarChart3, tone: 'slate' }
 ];
 
-const REPORTING_PERIODS = [
-  { value: 'all', label: 'Všechna data', start: '', end: '' },
-  { value: '2026-03_2026-08', label: '03/2026 - 08/2026', start: '2026-03-01', end: '2026-08-31' },
-  { value: '2026-09_2027-02', label: '09/2026 - 02/2027', start: '2026-09-01', end: '2027-02-28' },
-  { value: '2027-03_2027-08', label: '03/2027 - 08/2027', start: '2027-03-01', end: '2027-08-31' },
-  { value: '2027-09_2028-02', label: '09/2027 - 02/2028', start: '2027-09-01', end: '2028-02-29' }
-];
+const PROJECT_REPORTING_RANGE = {
+  start: '2026-03-01',
+  end: '2028-02-29'
+};
 
 const emptyClientDraft = {
   jmeno: '',
@@ -338,7 +335,8 @@ const emptyGeneratorDraft = {
 };
 
 const emptyFilters = {
-  period: 'all',
+  dateFrom: PROJECT_REPORTING_RANGE.start,
+  dateTo: PROJECT_REPORTING_RANGE.end,
   ka: 'all',
   worker: 'all'
 };
@@ -350,10 +348,9 @@ export {
   WORKERS,
   REPORT_PROMPTS,
   APP_VIEWS,
-  REPORTING_PERIODS,
+  PROJECT_REPORTING_RANGE,
   emptyClientDraft,
   emptyGeneratorDraft,
   emptyFilters
 };
-
 
